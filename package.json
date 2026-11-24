@@ -16,8 +16,10 @@
     "build": "npm run build -w client && npm run build -w server",
     "start": "npm run start -w server",
     "test": "npm run test -w client",
-    "typecheck": "npm run typecheck -w client && npm run typecheck -w server"
+    "typecheck": "npm run typecheck -w client && npm run typecheck -w server",
+    "prepare:vercel": "node scripts/prepare-vercel.mjs"
   },
+
   "devDependencies": {
     "concurrently": "^10.0.7"
   }
