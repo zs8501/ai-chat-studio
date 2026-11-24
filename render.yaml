@@ -1,19 +1,18 @@
-# Render Blueprint：https://dashboard.render.com/blueprints
+# 若 Blueprint 仍要求绑卡：不要用 Blueprint，改为手动 New → Web Service，算力选 Free
 services:
   - type: web
     name: ai-chat-studio
     runtime: node
     plan: free
-    region: singapore
+    region: oregon
     buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
-        value: "24"
+        value: "22"
       - key: NODE_ENV
         value: production
-      # 不填 LLM_API_KEY 时自动 Mock 演示；充值后可在 Render 控制台补上
       - key: LLM_BASE_URL
         value: https://api.deepseek.com
       - key: LLM_MODELS
