@@ -18,10 +18,18 @@ const FALLBACK_INFO: ServerInfo = {
   models: ['deepseek-chat', 'deepseek-reasoner'],
 };
 
+function shouldUseMock(res: Response) {
+  if (!res.ok || !res.body) return true;
+  const ct = res.headers.get('content-type') || '';
+  // 静态站常把 /api/* 重写成 index.html
+  if (ct.includes('text/html')) return true;
+  return false;
+}
+
 export async function fetchServerInfo(): Promise<ServerInfo> {
   try {
     const res = await fetch('/api/health', { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return FALLBACK_INFO;
+    if (shouldUseMock(res)) return FALLBACK_INFO;
     return res.json();
   } catch {
     return FALLBACK_INFO;
@@ -40,14 +48,20 @@ export async function streamChat(
       signal,
     });
 
-    if (!res.ok || !res.body) {
-      // 静态托管或 API 不可用时，回退到前端 Mock，保证演示可用
+    if (shouldUseMock(res)) {
       await mockStreamChat(body, { signal, onEvent });
       return;
     }
 
-    const parser = createSSEParser((data) => onEvent(JSON.parse(data) as StreamEvent));
-    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    const parser = createSSEParser((data) => {
+      try {
+        onEvent(JSON.parse(data) as StreamEvent);
+      } catch {
+        // 非 JSON 分片（例如误返回的 HTML）直接忽略，交由外层兜底
+        throw new Error('INVALID_SSE');
+      }
+    });
+    const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
 
     while (true) {
       const { done, value } = await reader.read();
