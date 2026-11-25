@@ -1,5 +1,6 @@
 import { createSSEParser } from '../lib/sse';
 import type { Role, StreamEvent } from '../types';
+import { mockStreamChat } from './mock';
 
 export interface ChatRequest {
   model: string;
@@ -12,39 +13,49 @@ export interface ServerInfo {
   models: string[];
 }
 
+const FALLBACK_INFO: ServerInfo = {
+  mock: true,
+  models: ['deepseek-chat', 'deepseek-reasoner'],
+};
+
 export async function fetchServerInfo(): Promise<ServerInfo> {
-  const res = await fetch('/api/health');
-  if (!res.ok) throw new Error('服务不可用');
-  return res.json();
+  try {
+    const res = await fetch('/api/health', { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return FALLBACK_INFO;
+    return res.json();
+  } catch {
+    return FALLBACK_INFO;
+  }
 }
 
 export async function streamChat(
   body: ChatRequest,
   { signal, onEvent }: { signal: AbortSignal; onEvent: (event: StreamEvent) => void },
 ) {
-  const res = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
 
-  if (!res.ok || !res.body) {
-    let message = `请求失败（${res.status}）`;
-    try {
-      message = (await res.json()).error ?? message;
-    } catch {
-      // 非 JSON 响应，保留默认提示
+    if (!res.ok || !res.body) {
+      // 静态托管或 API 不可用时，回退到前端 Mock，保证演示可用
+      await mockStreamChat(body, { signal, onEvent });
+      return;
     }
-    throw new Error(message);
-  }
 
-  const parser = createSSEParser((data) => onEvent(JSON.parse(data) as StreamEvent));
-  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    const parser = createSSEParser((data) => onEvent(JSON.parse(data) as StreamEvent));
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parser.feed(value);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.feed(value);
+    }
+  } catch (err) {
+    if (signal.aborted) throw err;
+    await mockStreamChat(body, { signal, onEvent });
   }
 }
