@@ -14,8 +14,7 @@ if (!process.env.VERCEL && fs.existsSync(clientDist)) {
 if (!process.env.VERCEL) {
   app.listen(config.port, () => {
     console.log(`Server running at http://localhost:${config.port}`);
-    console.log(config.mock ? '未配置 LLM_API_KEY，已启用 Mock 演示模式' : `已连接模型服务：${config.baseURL}`);
+    console.log(config.mock ? '未配�?LLM_API_KEY，已启用 Mock 演示模式' : `已连接模型服务：${config.baseURL}`);
   });
 }
 
-export default app;

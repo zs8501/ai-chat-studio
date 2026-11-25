@@ -1,28 +1,25 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { setTimeout as sleep } from 'node:timers/promises';
+const { setTimeout: sleep } = require('node:timers/promises');
 
-type Role = 'system' | 'user' | 'assistant';
-interface Message { role: Role; content: string }
+const models = () =>
+  String(process.env.LLM_MODELS || 'deepseek-chat,deepseek-reasoner')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-const models = (process.env.LLM_MODELS ?? 'deepseek-chat,deepseek-reasoner')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+const apiKey = () => String(process.env.LLM_API_KEY || '').trim();
+const baseURL = () => String(process.env.LLM_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
 
-const apiKey = () => process.env.LLM_API_KEY?.trim() ?? '';
-const baseURL = () => (process.env.LLM_BASE_URL ?? 'https://api.deepseek.com').replace(/\/+$/, '');
-
-function send(res: VercelResponse, event: unknown) {
+function send(res, event) {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-function* chunkText(text: string, size: number) {
+function* chunkText(text, size) {
   const chars = [...text];
   for (let i = 0; i < chars.length; i += size) yield chars.slice(i, i + size).join('');
 }
 
-async function mockStream(res: VercelResponse, model: string, question: string, signal: AbortSignal) {
-  if (model.includes('reasoner')) {
+async function mockStream(res, model, question, signal) {
+  if (String(model).includes('reasoner')) {
     const reasoning = '当前为 Mock 演示模式。先梳理问题要点，再给出结构化回答。';
     for (const piece of chunkText(reasoning, 3)) {
       await sleep(12, undefined, { signal });
@@ -32,7 +29,7 @@ async function mockStream(res: VercelResponse, model: string, question: string, 
 
   const answer = `> 当前为 **Mock 演示模式**（未配置 \`LLM_API_KEY\`）。
 
-你的问题是：「${question.slice(0, 100)}」
+你的问题是：「${String(question).slice(0, 100)}」
 
 ### 演示内容
 
@@ -52,15 +49,15 @@ const res = await fetch('/api/chat', { method: 'POST', body: JSON.stringify(payl
     await sleep(10, undefined, { signal });
     send(res, { type: 'content', content: piece });
   }
-  send(res, { type: 'usage', usage: { prompt: question.length, completion: answer.length } });
+  send(res, { type: 'usage', usage: { prompt: String(question).length, completion: answer.length } });
 }
 
-async function* readSSE(body: ReadableStream<Uint8Array>) {
+async function* readSSE(body) {
   const decoder = new TextDecoder();
   let buffer = '';
   for await (const chunk of body) {
     buffer = (buffer + decoder.decode(chunk, { stream: true })).replace(/\r\n/g, '\n');
-    let index: number;
+    let index;
     while ((index = buffer.indexOf('\n\n')) !== -1) {
       const block = buffer.slice(0, index);
       buffer = buffer.slice(index + 2);
@@ -74,11 +71,7 @@ async function* readSSE(body: ReadableStream<Uint8Array>) {
   }
 }
 
-async function llmStream(
-  res: VercelResponse,
-  params: { model: string; messages: Message[]; temperature?: number },
-  signal: AbortSignal,
-) {
+async function llmStream(res, params, signal) {
   const response = await fetch(`${baseURL()}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -102,13 +95,10 @@ async function llmStream(
 
   for await (const data of readSSE(response.body)) {
     if (data === '[DONE]') return;
-    const chunk = JSON.parse(data) as {
-      choices?: { delta?: { content?: string | null; reasoning_content?: string | null } }[];
-      usage?: { prompt_tokens: number; completion_tokens: number } | null;
-    };
-    const delta = chunk.choices?.[0]?.delta;
-    if (delta?.reasoning_content) send(res, { type: 'reasoning', content: delta.reasoning_content });
-    if (delta?.content) send(res, { type: 'content', content: delta.content });
+    const chunk = JSON.parse(data);
+    const delta = chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
+    if (delta && delta.reasoning_content) send(res, { type: 'reasoning', content: delta.reasoning_content });
+    if (delta && delta.content) send(res, { type: 'content', content: delta.content });
     if (chunk.usage) {
       send(res, {
         type: 'usage',
@@ -118,26 +108,29 @@ async function llmStream(
   }
 }
 
-export const config = { maxDuration: 300 };
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method Not Allowed' });
+    res.statusCode = 405;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
     return;
   }
 
-  const { model, messages, temperature } = (req.body ?? {}) as {
-    model?: string;
-    messages?: Message[];
-    temperature?: number;
-  };
+  const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+  const model = body.model;
+  const messages = body.messages;
+  const temperature = body.temperature;
 
-  if (!model || !models.includes(model)) {
-    res.status(400).json({ error: '不支持的模型' });
+  if (!model || !models().includes(model)) {
+    res.statusCode = 400;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({ error: '不支持的模型' }));
     return;
   }
   if (!Array.isArray(messages) || messages.length === 0) {
-    res.status(400).json({ error: 'messages 不能为空' });
+    res.statusCode = 400;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({ error: 'messages 不能为空' }));
     return;
   }
 
@@ -151,11 +144,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const controller = new AbortController();
   res.on('close', () => controller.abort());
 
-  const question = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+  const question = [...messages].reverse().find((m) => m.role === 'user');
+  const q = (question && question.content) || '';
 
   try {
     if (!apiKey()) {
-      await mockStream(res, model, question, controller.signal);
+      await mockStream(res, model, q, controller.signal);
     } else {
       await llmStream(res, { model, messages, temperature }, controller.signal);
     }
@@ -167,4 +161,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } finally {
     res.end();
   }
-}
+};
+
+module.exports.config = { maxDuration: 300 };
