@@ -1,4 +1,7 @@
-const { setTimeout: sleep } = require('node:timers/promises');
+export const config = {
+  runtime: 'nodejs',
+  maxDuration: 300,
+};
 
 const models = () =>
   String(process.env.LLM_MODELS || 'deepseek-chat,deepseek-reasoner')
@@ -9,8 +12,8 @@ const models = () =>
 const apiKey = () => String(process.env.LLM_API_KEY || '').trim();
 const baseURL = () => String(process.env.LLM_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
 
-function send(res, event) {
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+function sseEncode(event) {
+  return `data: ${JSON.stringify(event)}\n\n`;
 }
 
 function* chunkText(text, size) {
@@ -18,38 +21,22 @@ function* chunkText(text, size) {
   for (let i = 0; i < chars.length; i += size) yield chars.slice(i, i + size).join('');
 }
 
-async function mockStream(res, model, question, signal) {
-  if (String(model).includes('reasoner')) {
-    const reasoning = '当前为 Mock 演示模式。先梳理问题要点，再给出结构化回答。';
-    for (const piece of chunkText(reasoning, 3)) {
-      await sleep(12, undefined, { signal });
-      send(res, { type: 'reasoning', content: piece });
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
     }
-  }
-
-  const answer = `> 当前为 **Mock 演示模式**（未配置 \`LLM_API_KEY\`）。
-
-你的问题是：「${String(question).slice(0, 100)}」
-
-### 演示内容
-
-\`\`\`ts
-const res = await fetch('/api/chat', { method: 'POST', body: JSON.stringify(payload) });
-\`\`\`
-
-| 能力 | 实现 |
-| --- | --- |
-| 流式输出 | SSE |
-| 中断生成 | AbortController |
-| 部署 | Vercel Serverless |
-
-在 Vercel 项目 Settings → Environment Variables 中填写 \`LLM_API_KEY\` 后重新部署，即可接入真实模型。`;
-
-  for (const piece of chunkText(answer, 4)) {
-    await sleep(10, undefined, { signal });
-    send(res, { type: 'content', content: piece });
-  }
-  send(res, { type: 'usage', usage: { prompt: String(question).length, completion: answer.length } });
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t);
+        reject(new DOMException('Aborted', 'AbortError'));
+      },
+      { once: true },
+    );
+  });
 }
 
 async function* readSSE(body) {
@@ -71,96 +58,120 @@ async function* readSSE(body) {
   }
 }
 
-async function llmStream(res, params, signal) {
-  const response = await fetch(`${baseURL()}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey()}`,
-    },
-    body: JSON.stringify({
-      model: params.model,
-      messages: params.messages,
-      temperature: params.temperature,
-      stream: true,
-      stream_options: { include_usage: true },
-    }),
-    signal,
-  });
-
-  if (!response.ok || !response.body) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`模型接口返回错误 ${response.status}：${text.slice(0, 300)}`);
-  }
-
-  for await (const data of readSSE(response.body)) {
-    if (data === '[DONE]') return;
-    const chunk = JSON.parse(data);
-    const delta = chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
-    if (delta && delta.reasoning_content) send(res, { type: 'reasoning', content: delta.reasoning_content });
-    if (delta && delta.content) send(res, { type: 'content', content: delta.content });
-    if (chunk.usage) {
-      send(res, {
-        type: 'usage',
-        usage: { prompt: chunk.usage.prompt_tokens, completion: chunk.usage.completion_tokens },
-      });
+async function mockEvents(model, question, signal) {
+  const events = [];
+  if (String(model).includes('reasoner')) {
+    const reasoning = '先梳理问题要点，再给出结构化回答。';
+    for (const piece of chunkText(reasoning, 3)) {
+      await sleep(8, signal);
+      events.push({ type: 'reasoning', content: piece });
     }
   }
+
+  const answer = `你的问题是：「${String(question).slice(0, 100)}」
+
+这是 Mock 回退（未读取到 LLM_API_KEY）。请确认 Vercel 环境变量已配置并重新部署。`;
+  for (const piece of chunkText(answer, 4)) {
+    await sleep(8, signal);
+    events.push({ type: 'content', content: piece });
+  }
+  events.push({ type: 'usage', usage: { prompt: String(question).length, completion: answer.length } });
+  events.push({ type: 'done' });
+  return events;
 }
 
-module.exports = async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.statusCode = 405;
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
-    return;
+export async function POST(request) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: '请求体不是合法 JSON' }, { status: 400 });
   }
 
-  const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
   const model = body.model;
   const messages = body.messages;
   const temperature = body.temperature;
 
   if (!model || !models().includes(model)) {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: '不支持的模型' }));
-    return;
+    return Response.json({ error: '不支持的模型' }, { status: 400 });
   }
   if (!Array.isArray(messages) || messages.length === 0) {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: 'messages 不能为空' }));
-    return;
+    return Response.json({ error: 'messages 不能为空' }, { status: 400 });
   }
 
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
+  const question = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
+  const encoder = new TextEncoder();
+  const key = apiKey();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const signal = request.signal;
+      const push = (event) => controller.enqueue(encoder.encode(sseEncode(event)));
+
+      try {
+        if (!key) {
+          for (const event of await mockEvents(model, question, signal)) push(event);
+          controller.close();
+          return;
+        }
+
+        const response = await fetch(`${baseURL()}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature,
+            stream: true,
+            stream_options: { include_usage: true },
+          }),
+          signal,
+        });
+
+        if (!response.ok || !response.body) {
+          const text = await response.text().catch(() => '');
+          push({ type: 'error', message: `模型接口返回错误 ${response.status}：${text.slice(0, 300)}` });
+          controller.close();
+          return;
+        }
+
+        for await (const data of readSSE(response.body)) {
+          if (data === '[DONE]') break;
+          const chunk = JSON.parse(data);
+          const delta = chunk.choices?.[0]?.delta;
+          if (delta?.reasoning_content) push({ type: 'reasoning', content: delta.reasoning_content });
+          if (delta?.content) push({ type: 'content', content: delta.content });
+          if (chunk.usage) {
+            push({
+              type: 'usage',
+              usage: { prompt: chunk.usage.prompt_tokens, completion: chunk.usage.completion_tokens },
+            });
+          }
+        }
+        push({ type: 'done' });
+        controller.close();
+      } catch (err) {
+        if (!signal.aborted) {
+          push({ type: 'error', message: err instanceof Error ? err.message : '未知错误' });
+        }
+        try {
+          controller.close();
+        } catch {
+          // ignore
+        }
+      }
+    },
   });
 
-  const controller = new AbortController();
-  res.on('close', () => controller.abort());
-
-  const question = [...messages].reverse().find((m) => m.role === 'user');
-  const q = (question && question.content) || '';
-
-  try {
-    if (!apiKey()) {
-      await mockStream(res, model, q, controller.signal);
-    } else {
-      await llmStream(res, { model, messages, temperature }, controller.signal);
-    }
-    send(res, { type: 'done' });
-  } catch (err) {
-    if (!controller.signal.aborted) {
-      send(res, { type: 'error', message: err instanceof Error ? err.message : '未知错误' });
-    }
-  } finally {
-    res.end();
-  }
-};
-
-module.exports.config = { maxDuration: 300 };
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
