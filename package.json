@@ -17,7 +17,8 @@
     "start": "npm run start -w server",
     "test": "npm run test -w client",
     "typecheck": "npm run typecheck -w client && npm run typecheck -w server",
-    "prepare:vercel": "node scripts/prepare-vercel.mjs"
+    "prepare:vercel": "node scripts/prepare-vercel.mjs",
+    "vercel-build": "npm run build -w client && node scripts/prepare-vercel.mjs"
   },
   "devDependencies": {
     "@vercel/node": "^32.0.0",

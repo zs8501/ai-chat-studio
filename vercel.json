@@ -1,15 +1,18 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": null,
-  "installCommand": "npm ci",
-  "buildCommand": "npm run build -w client && node scripts/prepare-vercel.mjs",
-  "outputDirectory": "public",
-  "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "public" }
+    },
+    { "src": "api/health.js", "use": "@vercel/node" },
+    { "src": "api/chat.js", "use": "@vercel/node" }
   ],
-  "functions": {
-    "api/chat.js": {
-      "maxDuration": 300
-    }
-  }
+  "routes": [
+    { "src": "/api/health", "dest": "/api/health.js" },
+    { "src": "/api/chat", "dest": "/api/chat.js" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
 }
