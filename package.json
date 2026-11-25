@@ -19,8 +19,8 @@
     "typecheck": "npm run typecheck -w client && npm run typecheck -w server",
     "prepare:vercel": "node scripts/prepare-vercel.mjs"
   },
-
   "devDependencies": {
+    "@vercel/node": "^32.0.0",
     "concurrently": "^10.0.7"
   }
 }
